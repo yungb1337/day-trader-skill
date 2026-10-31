@@ -89,6 +89,75 @@ The entire toolset supports Indian markets natively via `--market in` (or `--mar
 - **Financial Analysis**: Financials presented in Indian denominations: Crores (`₹ Cr` = 10^7) and Lakhs (`₹ L` = 10^5).
 - **Super-Investors & Deal Tracking**: Tracks prominent Indian investors (Radhakishan Damani, Rakesh Jhunjhunwala / Rare Enterprises, Vijay Kedia, Ashish Kacholia, Nemish Shah, Raamdeo Agrawal, Porinju Veliyath, Dolly Khanna) and NSE/BSE Bulk & Block Deals.
 
+## Automated Agent & Asynchronous Daemon
+
+Beyond running individual skills by hand, this repository includes a unified pipeline orchestrator and an asynchronous background daemon designed for live intraday trading:
+
+### 1. One-Click Orchestrator (`trader/agent.py`)
+Chains the full pipeline in a single execution:
+`alerts (clock/calendar) -> scan (ORB/daily) -> news (catalysts/SEBI flags) -> entry (trigger) -> exit (stop/target) -> timemachine (10k Monte Carlo odds) -> budget (sizing & taxes) -> risk (gatekeeper)`
+
+Outputs an **Executive Trade Recommendation Card**:
+- **What to Buy**: Symbol, exchange, MIS product, quantity, entry price.
+- **Why Behind It**: Technical breakout confirmation, Monte Carlo win probability, Profit Factor, Expected Value.
+- **Target & Key Levels**: Stop loss, 1.5R/2R targets, exact breakdown of Indian statutory charges (STT, GST, SEBI, stamp duty, brokerage), and net expected profit.
+- **One-Click Order**: Ready-to-send Zerodha Kite Connect JSON payload.
+
+```bash
+# Run full automated analysis for a stock:
+python3 trader/agent.py --symbol INFY.NS
+
+# Replay a specific historical moment:
+python3 trader/agent.py --symbol INFY.NS --now "2026-10-30 11:05"
+```
+
+### 2. Background Asynchronous Daemon (`trader/daemon.py`)
+A non-blocking `asyncio` process that supervises live positions:
+- **State Machine**: `IDLE` -> `WAITING_TRIGGER` -> `ENTERING` -> `IN_POSITION` -> `CLOSING` -> `CLOSED`.
+- **Live Tick Monitoring**: Continuously evaluates incoming prices against Stop-Loss and Take-Profit levels.
+- **15:15 IST Mandatory Square-Off**: Automatically flattens any open MIS position at 15:15 IST, protecting you from broker penalty fees.
+- **Telemetry**: Writes live P&L and status updates atomically to `trader/state/live_trade.json`.
+
+```bash
+# Start background monitoring (paper or live):
+python3 trader/daemon.py run --symbol INFY.NS --interval 10 &
+
+# Inspect live status and floating P&L:
+python3 trader/daemon.py status
+
+# Stop daemon and immediately square off:
+python3 trader/daemon.py stop
+```
+
+### 3. Continuous Monitoring with Claude (`/loop`)
+In Claude Code, you can run autonomous recurring checks:
+```bash
+/loop 1m python3 trader/daemon.py status
+```
+Claude periodically reads daemon telemetry, displays the floating P&L, and alerts you when the trade reaches target, stop, or 15:15 IST square-off.
+
+---
+
+## Research & Intelligence Sources (What Actually Matters)
+
+Professional intraday desks avoid social media noise and focus on four high-signal tiers:
+
+1. **Primary Exchange Disclosures (100% Signal)**:
+   - **NSE Corporate Announcements (`nseindia.com`)**: Real-time regulatory filings (Regulation 30) for earnings, order wins, and board meetings.
+   - **NSE Bulk & Block Deals (17:30 IST daily)**: Tracks institutional buying/selling (>0.5% equity).
+   - **Promoter Disclosures (SAST)**: Tracks when company founders buy shares in the open market.
+2. **Real-Time Financial Catalysts**:
+   - **Moneycontrol Pro / Live Markets**: Rapid scorecards during earnings season and intraday management concall summaries.
+   - **Economic Times (ET Markets)**: Corporate developments, policy reforms, and sector flows.
+   - **CNBC-TV18 & LiveMint**: Fast macro alerts on RBI repo rate decisions, CPI inflation, and GST revenue.
+3. **Pre-Market Macro Cues (08:00 - 09:00 IST)**:
+   - **GIFT Nifty (formerly SGX Nifty)**: Traded in GIFT City from 06:30 IST; directly signals whether Nifty opens gap-up or gap-down.
+   - **US Market Close (Nasdaq & S&P 500)**: Direct overnight correlation with Indian IT and export stocks.
+   - **Brent Crude Oil & USD/INR**: Critical drivers of inflation, domestic currency strength, and foreign fund (FII) flows.
+4. **Fundamental Quality & Institutional Ownership**:
+   - **Screener.in**: Clean 10-year financials, ROCE/ROE, and searchable conference call transcripts.
+   - **Trendlyne**: Tracks Indian Super-Investor portfolios (Damani, Jhunjhunwala estate, Kedia, Kacholia, Nemish Shah).
+
 ## How to use it
 
 Everything lands in a `trader/` folder in your project, and each skill reads
@@ -241,6 +310,7 @@ trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, facts.py, metrics.example.json
 trader-pelosi/      SKILL.md, ptr.py
+trader/             agent.py, daemon.py
 tests/              unittest suite + offline fixtures
 ```
 
