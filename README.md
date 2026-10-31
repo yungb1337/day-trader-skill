@@ -129,12 +129,28 @@ python3 trader/daemon.py status
 python3 trader/daemon.py stop
 ```
 
-### 3. Continuous Monitoring with Claude (`/loop`)
-In Claude Code, you can run autonomous recurring checks:
+### 3. Continuous Monitoring & Persistent Agent (`/loop` & `trader/orchestrator.py`)
+In Claude Code, you can run autonomous recurring checks or let Claude orchestrate the entire intraday session:
+
 ```bash
+# Periodic daemon check:
 /loop 1m python3 trader/daemon.py status
+
+# Persistent agentic loop (Claude reasons at every tick):
+/loop 30s /trader-orchestrator
 ```
-Claude periodically reads daemon telemetry, displays the floating P&L, and alerts you when the trade reaches target, stop, or 15:15 IST square-off.
+
+The persistent orchestrator CLI (`trader/orchestrator.py`) provides structured JSON actions:
+- `status`: Market clock, session phase, open position
+- `scan`: ORB scanner on liquid NSE universe
+- `news`: Live headline catalyst and regulatory check
+- `evaluate`: Real-time 5-minute candle breakout confirmation
+- `plan`: Midpoint stop-loss and 1.5R target calculation
+- `simulate`: 10,000-path Monte Carlo Time Machine
+- `size`: Position sizing and Indian statutory charges breakdown
+- `riskcheck`: Risk limits and duplicate trade gatekeeper
+- `monitor`: Real-time tick evaluation vs stop, target, and 15:15 IST cutoff
+- `enter` & `squareoff`: Paper trade fills and realized P&L accounting
 
 ---
 
