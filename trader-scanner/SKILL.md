@@ -27,17 +27,23 @@ the scanner does not change that. It only saves you from flipping through
 `${CLAUDE_SKILL_DIR}` below is this skill's folder (where this SKILL.md lives).
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scan.py" universe                       # -> trader/universe.txt
-python3 "${CLAUDE_SKILL_DIR}/scan.py" daily                          # before the open -> trader/watchlist.json
+python3 "${CLAUDE_SKILL_DIR}/scan.py" universe                       # US: -> trader/universe.txt
+python3 "${CLAUDE_SKILL_DIR}/scan.py" universe --market in           # India: parses NSE NIFTY 500 / EQUITY_L
+python3 "${CLAUDE_SKILL_DIR}/scan.py" universe --nse-file EQUITY_L.csv # from local NSE CSV
+python3 "${CLAUDE_SKILL_DIR}/scan.py" daily                          # US before the open -> trader/watchlist.json
+python3 "${CLAUDE_SKILL_DIR}/scan.py" daily --market in              # India before 09:15 IST
 python3 "${CLAUDE_SKILL_DIR}/scan.py" daily --symbols TSLA,NVDA,AMD  # or --watchlist FILE, --limit 200
-python3 "${CLAUDE_SKILL_DIR}/scan.py" orb                            # after 9:50 AM ET -> trader/watchlist.json
-python3 "${CLAUDE_SKILL_DIR}/scan.py" orb --at 10:15                 # cut the clock at 10:15 AM ET
+python3 "${CLAUDE_SKILL_DIR}/scan.py" daily --symbols RELIANCE.NS,TCS.NS,INFY.NS
+python3 "${CLAUDE_SKILL_DIR}/scan.py" orb                            # US after 9:50 AM ET -> trader/watchlist.json
+python3 "${CLAUDE_SKILL_DIR}/scan.py" orb --market in                # India after 09:35 AM IST (09:15-09:30 range)
+python3 "${CLAUDE_SKILL_DIR}/scan.py" orb --at 10:15                 # cut the clock at 10:15
 python3 "${CLAUDE_SKILL_DIR}/scan.py" orb --watchlist trader/watchlist.json --json
 ```
 
-Flags: `--min-price 5` and `--min-volume` (daily 1,000,000, orb 0),
+Flags: `--min-price 5` (in USD or INR) and `--min-volume` (daily 1,000,000, orb 0),
 `--or-minutes 15`, `--max-confirm 200` (orb stage 2),
-`--now "2026-10-19 10:15"` (New York time) to pin the clock, `--offline PATH`
+`--market {us,in,nse,bse}`,
+`--now "2026-10-19 10:15"` (New York time for US, IST for India) to pin the clock, `--offline PATH`
 to read saved Yahoo files, `--no-write`, `--show N`, `--json`. Exit code 0
 when the scan found something, 1 when it found nothing or could not run (the
 reason is one plain line).
@@ -69,10 +75,13 @@ nasdaqtrader.com/dynamic/SymDir and keeps a row when, in this order:
 5. Out: the name still says unit, right, bond, preferred or preference.
 6. In: everything else (plain names like "AMETEK, Inc.").
 
-On the Oct 19 2026 files this keeps 5,943. The reel said 5,259: that count
-came from an ad hoc filter (names that say common or ordinary, no ADRs). All
-5,259 of those are in this list; the 684 extra are mostly ADRs, closed-end
-funds and partnership units. The Oct 20 files gave 5,942.
+On the Oct 19 2026 files this keeps 5,943 US stocks.
+
+### The Indian Universe (`--market in` or `--nse-file`)
+For Indian markets, `universe` parses the official NSE equity list (`EQUITY_L.csv`) or NIFTY 500
+(`ind_nifty500list.csv`). It filters strictly to Series `EQ` (ordinary common equities), dropping debt,
+preference shares, and SME series, and attaches the `.NS` suffix (or `.BO` for BSE). When fetching
+charts via Yahoo Finance, the dot before `NS` and `BO` is preserved literally (`RELIANCE.NS`, not `RELIANCE-NS`).
 
 ## The daily scan (before the open)
 
@@ -81,7 +90,7 @@ symbols take 298 requests. On Oct 20 2026 that took 145 seconds with the
 polite pause (0.3 s). Liquidity comes from the spark meta: last price at
 least `--min-price` and last session's volume at least `--min-volume`. Run it
 before the open or after the close: during the session the volume is the
-day's so far, and today's daily bar is left out until 4:00 PM.
+day's so far, and today's daily bar is left out until market close (16:00 ET for US, 15:30 IST for India).
 
 The setups are computed from daily closes only (spark has no highs or lows),
 so they are close cousins of the reel's `refs/scan.py`, which used highs and
@@ -101,9 +110,11 @@ listed most traded first (price times volume).
 
 ## The opening-range breakout scan (during the session)
 
-The opening range is the first `--or-minutes` (15) of the session: the 9:30,
-9:35 and 9:40 five-minute bars. A hit is the first completed 5-minute bar
-to CLOSE above the range high, at that bar's close time.
+The opening range is the first `--or-minutes` (15) of the session:
+- **US Markets**: the 9:30, 9:35 and 9:40 five-minute bars (range forms 09:30-09:45 ET, scan after 09:50 ET).
+- **Indian Markets (`--market in`)**: the 9:15, 9:20 and 9:25 five-minute bars (range forms 09:15-09:30 IST, scan after 09:35 IST).
+
+A hit is the first completed 5-minute bar to CLOSE above the range high, at that bar's close time.
 
 1. Stage 1, every symbol: spark closes of today's 5-minute bars, 20 a
    request. A chart goes on only if a completed bar after the range closed at

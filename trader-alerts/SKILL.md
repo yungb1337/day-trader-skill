@@ -28,20 +28,24 @@ user what happened and when it is time to be flat.
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" clock                          # NYSE open or closed, next open
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" clock --market in              # NSE/BSE open or closed, next open (IST)
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --from-plan                # stop, target, flat by close from trader/plan.json
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --opening-bell
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol TSLA --stop 358.32
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol TSLA --target 370.04
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --at 15:55 --label "flat by close" --before-close
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol RELIANCE.NS --stop 2480.0
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol RELIANCE.NS --target 2540.0
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --at 15:15 --label "flat by close" --market in
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol KO --pct 3
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" check                          # exit 0 = something rang
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" quote TSLA --write             # -> trader/prices.json
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" quote RELIANCE.NS --write      # preserves .NS dot, -> trader/prices.json
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" quote --holdings --write       # portfolio + plan tickers
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" list
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" reset tsla-plan-stop
 ```
 
-`--now "2026-10-19 15:55"` pins the clock (New York time); `--offline DIR`
+`--now "2026-10-19 15:55"` pins the clock (New York time for US, IST for India with `--market in`);
+`--market {us,in,nse,bse}` toggles market rules; `--offline DIR`
 reads saved quote files instead of the network.
 
 ## What it reads and writes
@@ -85,8 +89,9 @@ close, so "flat by close" at 15:55 rings at 12:55 on those days.
   `get_stock_snapshot`, IBKR `get_price_snapshot`) and write it into
   `trader/prices.json` as `{"as_of": "...Z", "prices": {"TSLA": 366.48}}`.
 
-## The NYSE clock
+## Market Clocks: NYSE & NSE/BSE
 
+### The NYSE clock (US Markets)
 Regular session 9:30 a.m. to 4:00 p.m. New York time, closed on weekends and
 on these holidays, from nyse.com/markets/hours-calendars (read 2026-10-13):
 
@@ -97,9 +102,21 @@ on these holidays, from nyse.com/markets/hours-calendars (read 2026-10-13):
   (Juneteenth observed), Jul 5 (Independence Day observed), Sep 6, Nov 25,
   Dec 24 (Christmas observed). Early close 1:00 p.m. on Nov 26.
 
-Daylight saving time is worked out in the tool, so it needs no time zone
-files and ignores the computer's own zone. For any other year it says the
-holiday list is unknown.
+### The NSE/BSE clock (Indian Markets, `--market in`)
+Regular session 9:15 a.m. to 3:30 p.m. Indian Standard Time (IST, UTC+05:30), closed on weekends
+and official NSE/BSE trading holidays (with evening Muhurat trading session on Diwali):
+
+- Regular trading hours: 09:15 to 15:30 IST. Pre-market session: 09:00 to 09:08 IST.
+- Intraday broker square-off: 15:15 IST (MIS orders auto-squared off).
+- 2026: Jan 26 (Republic Day), Mar 18 (Mahashivratri), Mar 25 (Holi), Apr 3 (Good Friday),
+  Apr 14 (Dr. Ambedkar Jayanti), May 1 (Maharashtra Day), Jun 17 (Bakri Eid),
+  Aug 15 (Independence Day), Sep 16 (Eid-e-Milad), Oct 2 (Gandhi Jayanti),
+  Oct 20 (Dussehra), Nov 8 (Diwali Balipratipada), Nov 24 (Guru Nanak Jayanti), Dec 25 (Christmas).
+- 2027: Jan 26, Mar 8, Mar 15, Mar 26, Apr 14, May 1, Jun 7, Aug 15, Oct 2, Oct 11, Oct 29, Nov 14, Dec 25.
+
+Daylight saving time is worked out in the tool for US markets, and IST operates on a fixed UTC+05:30
+offset without DST, so it needs no external time zone files. For Indian tickers (`.NS`, `.BO`),
+Yahoo Finance quotes preserve the literal dot to prevent 404 errors.
 
 ## Steps
 

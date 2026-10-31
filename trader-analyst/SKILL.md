@@ -25,20 +25,27 @@ trade: what did the last report say, and is the next one inside this trade?
 Tool in this folder (standard library Python, no keys):
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/facts.py" --help
+python3 "${CLAUDE_SKILL_DIR}/facts.py" TSLA                          # US: SEC EDGAR XBRL facts
+python3 "${CLAUDE_SKILL_DIR}/facts.py" RELIANCE.NS                   # India: Yahoo Finance quoteSummary API (INR / Cr)
+python3 "${CLAUDE_SKILL_DIR}/facts.py" TCS.NS INFY.NS --metrics trader/metrics.json
 ```
 
 It needs the SEC User-Agent (`sec_user_agent` in `trader/config.json`, or
 `SEC_USER_AGENT`): "Your Name you@example.com" with the user's real name and
-email. It refuses to call SEC without one.
+email for US tickers. For Indian tickers (`.NS` / `.BO`), SEC User-Agent is bypassed and data is retrieved directly via Yahoo Finance quoteSummary.
 
 ## What it reads and writes
 
-- Reads `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json` (every
+- **US Companies**: Reads `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json` (every
   number the company has tagged in its filings), the company's submissions
   list (for the newest 10-Q or 10-K and the newest 8-K with item 2.02,
   "Results of Operations") and that 8-K's folder to find the press release
   (the EX-99.1 exhibit).
+- **Indian Companies (`.NS` / `.BO`)**: Reads quarterly financial statements via Yahoo Finance quoteSummary API (`financialData`, `defaultKeyStatistics`).
+  Financial values are formatted in Indian denomination:
+  - Crores (`₹ Cr` = 10^7)
+  - Lakhs (`₹ L` = 10^5)
+  - Rupee symbol `₹`
 - Writes `trader/metrics.json` with `--metrics`: one row per company (TTM
   revenue, net income and diluted EPS, the latest margins and growth), for
   your notes or a spreadsheet. `metrics.example.json` in this folder is a

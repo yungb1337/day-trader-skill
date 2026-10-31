@@ -31,17 +31,20 @@ good-looking replay does not change that.
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run                    # trader/plan.json, 10,000 replays, seed 19
+python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run --market in        # Indian market: 75 session bars (09:15-15:30 IST)
 python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run --write            # also save trader/timemachine.json
-python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run --until 15:55      # end each replay at your flat-by time
+python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run --until 15:15      # end each replay at your flat-by time (15:15 IST)
 python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run --json
 python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run --symbol TSLA --date 2026-10-19 \
     --entry 364.18 --stop 358.32 --target 370.04 --entry-time "10:15 AM"
+python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run --symbol RELIANCE.NS --date 2026-10-19 \
+    --entry 2500.0 --stop 2480.0 --target 2540.0 --entry-time "09:35 AM" --market in
 python3 "${CLAUDE_SKILL_DIR}/timemachine.py" chart --from           # ASCII fan chart of the saved run
 ```
 
-Other flags: `--replays N`, `--seed N` (default 19), `--window N` (default 2
+Other flags: `--market {us,in,nse,bse}`, `--replays N`, `--seed N` (default 19), `--window N` (default 2
 bars), `--offline FILE` (a saved Yahoo chart JSON, `.json` or `.json.gz`),
-`--now "2026-10-19 10:15"` (New York time) to pin the clock.
+`--now "2026-10-19 10:15"` (New York time for US, IST for India) to pin the clock.
 
 ## What it reads and writes
 
@@ -53,9 +56,10 @@ bars), `--offline FILE` (a saved Yahoo chart JSON, `.json` or `.json.gz`),
 
 ## How it works
 
-1. **The pool.** It keeps only FULL sessions before the plan's date: all 78
-   five-minute bars, 9:30 to 4:00 New York time. Half days, gaps and today
-   are left out. Every bar becomes four ratios to the bar before it:
+1. **The pool.** It keeps only FULL sessions before the plan's date:
+   - US markets: all 78 five-minute bars, 9:30 to 4:00 New York time.
+   - Indian markets (`--market in` or `.NS`/`.BO`): all 75 five-minute bars, 9:15 to 3:30 IST.
+   Half days, gaps and today are left out. Every bar becomes four ratios to the bar before it:
    open, high, low and close over the previous close.
 2. **One replay.** Start at the entry price. For each bar left in the day,
    pick a past bar from the same time of day (plus or minus 2 bars) at

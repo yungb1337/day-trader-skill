@@ -1,10 +1,10 @@
 # The Day Trader skill
 
-11 Claude skills for day trading: scan thousands of charts, track breaking news, time every entry and exit, and replay every outcome before you risk a dollar.
+11 Claude skills for day trading: scan thousands of charts, track breaking news, time every entry and exit, and replay every outcome before you risk a dollar. Full native support for both **US Markets (NYSE & Nasdaq)** and **Indian Markets (NSE & BSE)**.
 
 Free, MIT, no signup, no API key. The tools are plain Python that read free
-public data: Yahoo Finance charts, Nasdaq Trader's symbol lists, SEC EDGAR
-and the House Clerk.
+public data: Yahoo Finance charts, Nasdaq Trader's symbol lists, NSE India equity & NIFTY 500 lists,
+SEC EDGAR, the House Clerk, and NSE Bulk/Block deals.
 
 One scans thousands of charts for setups. Another tracks breaking news on
 every stock you watch. One watches a setup bar by bar and tells you the moment
@@ -61,17 +61,33 @@ or in the `SEC_USER_AGENT` environment variable.
 
 | command | job | what it does |
 | --- | --- | --- |
-| `/trader-scanner` | Chart Scanner | Scans thousands of charts for setups: opening-range breakouts, flags, oversold bounces. |
-| `/trader-news` | News Monitor | Tracks breaking news on every stock you watch and flags what moves it. |
-| `/trader-entry` | Entry Timer | Watches a setup bar by bar and tells you the moment to get in. |
-| `/trader-exit` | Exit Planner | Sets your stop and your target before you enter, so you know when to get out. |
-| `/trader-timemachine` | Time Machine | Replays every possible outcome of a trade before you risk a dollar: 10,000 simulated sessions plus every past time the setup fired. |
-| `/trader-risk` | Risk Manager | Checks every trade against your limits and stops anything over them. |
-| `/trader-budget` | Budget Manager | Sizes every position to your budget and your max loss per trade. |
-| `/trader-broker` | Order Executor | Sends approved orders to your broker, paper trading by default, never without your yes. |
-| `/trader-alerts` | Price Alerts | Rings when a price, a stop or the opening bell hits. |
-| `/trader-analyst` | Earnings Analyst | Reads earnings reports and sums up what changed. |
-| `/trader-pelosi` | Pelosi Tracker | Reads Congress's stock-trade disclosures the minute they are filed. |
+| `/trader-scanner` | Chart Scanner | Scans thousands of charts for setups: opening-range breakouts, flags, oversold bounces (US & NSE/BSE). |
+| `/trader-news` | News Monitor | Tracks breaking news on every stock you watch and flags what moves it (Yahoo US/IN feeds & regulatory tags). |
+| `/trader-entry` | Entry Timer | Watches a setup bar by bar and tells you the moment to get in (09:30-09:45 ET for US, 09:15-09:30 IST for India). |
+| `/trader-exit` | Exit Planner | Sets your stop and your target before you enter (flat by 15:55 ET for US, 15:15 IST for India). |
+| `/trader-timemachine` | Time Machine | Replays every possible outcome of a trade before you risk a dollar: 10,000 simulated sessions (78 bars US, 75 bars India). |
+| `/trader-risk` | Risk Manager | Checks every trade against your limits (PDT bypassed for India, Zerodha & Alpaca validation). |
+| `/trader-budget` | Budget Manager | Sizes every position to your budget and max loss (calculates STT, GST, SEBI, Stamp Duty & NSE charges). |
+| `/trader-broker` | Order Executor | Sends approved orders to your broker (Alpaca, IBKR, or Zerodha Kite Connect), paper trading by default, never without your yes. |
+| `/trader-alerts` | Price Alerts | Rings when a price, a stop or the opening bell hits (NYSE & NSE trading calendars and holidays). |
+| `/trader-analyst` | Earnings Analyst | Reads earnings reports straight from EDGAR or Yahoo Finance quoteSummary (INR Crores & Lakhs). |
+| `/trader-pelosi` | Pelosi / Super-Investor Tracker | Reads Congress's disclosures & Indian Super-Investors (Damani, Jhunjhunwala, Kedia, etc.) plus NSE Bulk/Block deals. |
+
+## Indian Market Support (NSE & BSE)
+
+The entire toolset supports Indian markets natively via `--market in` (or `--market nse`/`--market bse`), symbol suffixes (`.NS`/`.BO`), or `"market": "in"` in `trader/config.json`:
+
+- **Market Sessions**: 09:15 to 15:30 IST regular trading hours; 09:00 to 09:08 IST pre-market.
+- **Intraday Square-off**: Mandatory auto-square-off at 15:15 IST (`flat_by: "15:15"`) for MIS intraday positions.
+- **Timezone**: Indian Standard Time (IST, UTC+05:30 fixed offset without daylight saving).
+- **Trading Calendars**: Official NSE/BSE trading holidays (Republic Day, Mahashivratri, Holi, Diwali, Eid, Independence Day, etc.) and Muhurat Trading.
+- **Tickers**: Preserves `.NS` and `.BO` extensions with literal dots for Yahoo Finance quotes (`RELIANCE.NS`, `TCS.NS`, `INFY.BO`).
+- **Universes**: Official NSE Equity list (`EQUITY_L.csv`) filtered to Series EQ and NIFTY 500 (`ind_nifty500list.csv`).
+- **Broker & Order Formatting**: Zerodha Kite Connect order specifications (`exchange: "NSE"`, `tradingsymbol: "RELIANCE"`, `product: "MIS"`, `validity: "DAY"`).
+- **Statutory Charges**: Complete breakdown of STT (0.025% intraday sell), NSE turnover charges (0.00297%), SEBI turnover fees (₹10/cr), stamp duty (0.003%), GST (18%), and broker commissions.
+- **Risk & Regulatory Rules**: US SEC/FINRA PDT rule ($25,000 threshold and 3-trades-per-5-days rule) is bypassed for Indian markets as SEBI rules apply. INR limits for order size and max loss.
+- **Financial Analysis**: Financials presented in Indian denominations: Crores (`₹ Cr` = 10^7) and Lakhs (`₹ L` = 10^5).
+- **Super-Investors & Deal Tracking**: Tracks prominent Indian investors (Radhakishan Damani, Rakesh Jhunjhunwala / Rare Enterprises, Vijay Kedia, Ashish Kacholia, Nemish Shah, Raamdeo Agrawal, Porinju Veliyath, Dolly Khanna) and NSE/BSE Bulk & Block Deals.
 
 ## How to use it
 
@@ -126,6 +142,7 @@ All standard-library Python. The data tools read public endpoints and are
 polite about it.
 
 ```bash
+# US Market Commands:
 python3 trader-scanner/scan.py universe                                # ~5,900 US stocks, Nasdaq Trader
 python3 trader-scanner/scan.py daily                                   # pre-market setups, whole universe
 python3 trader-scanner/scan.py orb --at 10:15                          # opening-range breakouts so far
@@ -141,6 +158,20 @@ python3 trader-alerts/alerts.py add --from-plan                        # stop, t
 python3 trader-alerts/alerts.py check                                  # rings what hit, once
 python3 trader-analyst/facts.py TSLA                                   # quarters, growth, EPS
 python3 trader-pelosi/ptr.py index --member pelosi                     # her PTRs this year
+
+# Indian Market Commands (--market in):
+python3 trader-scanner/scan.py universe --market in                    # NIFTY 500 / NSE Equity universe
+python3 trader-scanner/scan.py orb --market in --at 10:00              # 09:15-09:30 range breakout
+python3 trader-news/news.py --tickers RELIANCE.NS --hours 12           # Indian headlines, regulatory tags
+python3 trader-entry/entry.py check RELIANCE.NS --write                # IST timestamps & Indian market session
+python3 trader-exit/exit.py plan --flat-by 15:15 --write               # auto-square-off at 15:15 IST
+python3 trader-timemachine/timemachine.py run --market in --write      # 75 5-min bars (09:15-15:30 IST)
+python3 trader-budget/size.py --config config.india.example.json       # STT, NSE, SEBI, GST breakdown
+python3 trader-risk/check.py                                           # PDT bypassed, Zerodha validation
+python3 trader-broker/ticket.py show                                   # Zerodha Kite Connect order format
+python3 trader-alerts/alerts.py clock --market in                      # NSE/BSE clock & holidays
+python3 trader-analyst/facts.py RELIANCE.NS                            # Financials in ₹ Crores & Lakhs
+python3 trader-pelosi/ptr.py deals --investor damani                   # Indian Super-Investors & Bulk Deals
 ```
 
 ```bash

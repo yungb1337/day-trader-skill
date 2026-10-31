@@ -58,6 +58,13 @@ import math
 import os
 import sys
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # v2 defaults: the contract's config.example.json. Missing keys fall back to these.
 DEFAULTS = {
     "budget": None,
@@ -123,17 +130,91 @@ def eastern_to_utc(local):
     return local + datetime.timedelta(hours=5)
 
 
-def parse_now(text):
-    """ISO time -> naive UTC. A time without an offset is taken as New York time."""
+IST_OFFSET = datetime.timedelta(hours=5, minutes=30)
+
+
+def to_ist(utc):
+    return utc.replace(tzinfo=None) + IST_OFFSET
+
+
+def ist_to_utc(local):
+    return local.replace(tzinfo=None) - IST_OFFSET
+
+
+def is_indian_market(market=None, symbol=None, config=None):
+    if market:
+        m = str(market).strip().lower()
+        if m in ("in", "india", "nse", "bse"):
+            return True
+        if m == "us":
+            return False
+    if symbol:
+        s = str(symbol).strip().upper()
+        if s.endswith(".NS") or s.endswith(".BO"):
+            return True
+    if config and isinstance(config, dict):
+        m = config.get("market") or config.get("exchange") or config.get("country")
+        if m and str(m).strip().lower() in ("in", "india", "nse", "bse"):
+            return True
+        b = config.get("broker")
+        if b and str(b).strip().lower() in ("zerodha", "kite", "upstox", "angelone", "groww"):
+            return True
+    return False
+
+
+def calculate_indian_charges(buy_price, sell_price, qty, is_intraday=True):
+    turnover_buy = float(buy_price) * int(qty)
+    turnover_sell = float(sell_price) * int(qty)
+    total_turnover = turnover_buy + turnover_sell
+
+    brokerage_buy = min(20.0, turnover_buy * 0.0003) if is_intraday else 0.0
+    brokerage_sell = min(20.0, turnover_sell * 0.0003) if is_intraday else 0.0
+    brokerage = round(brokerage_buy + brokerage_sell, 2)
+
+    stt = round(turnover_sell * 0.00025, 2) if is_intraday else round(total_turnover * 0.001, 2)
+    txn_charge = round(total_turnover * 0.0000297, 2)
+    sebi_fee = round(total_turnover * 0.000001, 2)
+    stamp_duty = round(turnover_buy * 0.00003, 2)
+    gst = round((brokerage + txn_charge + sebi_fee) * 0.18, 2)
+
+    total_charges = round(brokerage + stt + txn_charge + sebi_fee + stamp_duty + gst, 2)
+    net_pnl_at_target = round((turnover_sell - turnover_buy) - total_charges, 2)
+
+    return {
+        "brokerage": brokerage,
+        "stt": stt,
+        "exchange_charges": txn_charge,
+        "nse_turnover": txn_charge,
+        "sebi_charges": sebi_fee,
+        "sebi_turnover": sebi_fee,
+        "stamp_duty": stamp_duty,
+        "gst": gst,
+        "total_charges": total_charges,
+        "total": total_charges,
+        "net_pnl": net_pnl_at_target,
+    }
+
+
+def parse_now(text, market=None):
+    """ISO time -> naive UTC. A time without an offset is taken as New York time (or IST for Indian market)."""
     if not text:
         return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0, tzinfo=None)
-    t = text.strip().replace("Z", "+00:00")
+    t = text.strip()
+    is_in = is_indian_market(market=market)
+    if t.upper().endswith(" ET"):
+        t = t[:-3].strip()
+        is_in = False
+    elif t.upper().endswith(" IST"):
+        t = t[:-4].strip()
+        is_in = True
+    t = t.replace("Z", "+00:00")
     try:
         dt = datetime.datetime.fromisoformat(t)
     except ValueError:
-        raise SizeError("--now wants a time like \"2026-10-19 10:15\" (New York) or ...Z (UTC)")
+        tz = "IST" if is_in else "New York"
+        raise SizeError("--now wants a time like \"2026-10-19 10:15\" (%s) or ...Z (UTC)" % tz)
     if dt.tzinfo is None:
-        return eastern_to_utc(dt)
+        return ist_to_utc(dt) if is_in else eastern_to_utc(dt)
     return (dt - dt.utcoffset()).replace(tzinfo=None)
 
 
@@ -293,11 +374,12 @@ def _num(x):
     return "%.2f" % x
 
 
-def money(x):
+def money(x, curr=None):
     x = float(x)
+    c = curr or "$"
     if abs(x - round(x)) < 0.005:
-        return "$" + "{:,.0f}".format(round(x))
-    return "$" + "{:,.2f}".format(x)
+        return c + "{:,.0f}".format(round(x))
+    return c + "{:,.2f}".format(x)
 
 
 # ---------------------------------------------------------------- plan mode (the default)
@@ -308,7 +390,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     limit  the limit price for a limit order (None = market)
     price  a FRESH latest price; a market order is sized at the higher of it and the plan's entry
     cash   the cash in trader/portfolio.json, if there is one
-    today  New York date (YYYY-MM-DD); a plan for another day is refused"""
+    today  date (YYYY-MM-DD); a plan for another day is refused"""
     c = dict(DEFAULTS)
     c.update(cfg or {})
     if not isinstance(plan, dict):
@@ -316,12 +398,15 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     sym = str(plan.get("symbol") or "").strip().upper()
     if not sym:
         raise SizeError("the plan has no symbol (run trader-exit)")
+    is_in = is_indian_market(market=plan.get("market"), symbol=sym, config=c)
+    curr = "₹" if is_in else "$"
     side = str(plan.get("side") or "buy").strip().lower()
     if side != "buy":
         raise SizeError("this pack sizes long (buy) day trades only; the plan says %r" % side)
     if today and plan.get("date") and str(plan["date"]) != today:
-        raise SizeError("the plan is for %s and today is %s in New York: make a new plan with trader-exit"
-                        % (plan["date"], today))
+        tz_name = "India (IST)" if is_in else "New York"
+        raise SizeError("the plan is for %s and today is %s in %s: make a new plan with trader-exit"
+                        % (plan["date"], today, tz_name))
     entry_plan, stop, target = _f(plan.get("entry")), _f(plan.get("stop")), _f(plan.get("target"))
     for name, v in (("entry", entry_plan), ("stop", stop), ("target", target)):
         if v is None or v <= 0:
@@ -357,28 +442,28 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
 
     cash_buffer = round(budget * buf_pct / 100.0, 2)
     available = budget - cash_buffer
-    cash_note = "budget %s minus the %s cash buffer" % (money(budget), money(cash_buffer))
+    cash_note = "budget %s minus the %s cash buffer" % (money(budget, curr), money(cash_buffer, curr))
     if cash is not None and cash - cash_buffer < available - 0.005:
         available = cash - cash_buffer
-        cash_note = "cash %s in trader/portfolio.json minus the %s buffer" % (money(cash), money(cash_buffer))
+        cash_note = "cash %s in trader/portfolio.json minus the %s buffer" % (money(cash, curr), money(cash_buffer, curr))
     available = max(round(available, 2), 0.0)
 
     limits = []
-    max_loss = _f(c.get("max_loss_per_trade_usd"))
+    max_loss = _f(c.get("max_loss_per_trade_inr")) if (is_in and c.get("max_loss_per_trade_inr") is not None) else _f(c.get("max_loss_per_trade_usd"))
     if max_loss:
         limits.append({"name": "max loss", "usd": max_loss, "per": risk, "shares": shares_for(max_loss, risk),
-                       "how": "%s max loss / %s risk a share" % (money(max_loss), _price(risk))})
+                       "how": "%s max loss / %s risk a share" % (money(max_loss, curr), _price(risk))})
     cap_pct = _f(c.get("max_position_pct"))
     if cap_pct:
         cap = round(budget * cap_pct / 100.0, 2)
         limits.append({"name": "position cap", "usd": cap, "per": ref, "shares": shares_for(cap, ref),
-                       "how": "%s%% of %s = %s / %s" % (_num(cap_pct), money(budget), money(cap), _price(ref))})
-    max_order = _f(c.get("max_order_usd"))
+                       "how": "%s%% of %s = %s / %s" % (_num(cap_pct), money(budget, curr), money(cap, curr), _price(ref))})
+    max_order = _f(c.get("max_order_inr")) if (is_in and c.get("max_order_inr") is not None) else _f(c.get("max_order_usd"))
     if max_order:
         limits.append({"name": "max order", "usd": max_order, "per": ref, "shares": shares_for(max_order, ref),
-                       "how": "%s / %s" % (money(max_order), _price(ref))})
+                       "how": "%s / %s" % (money(max_order, curr), _price(ref))})
     limits.append({"name": "cash", "usd": available, "per": ref, "shares": shares_for(available, ref),
-                   "how": "%s = %s / %s" % (cash_note, money(available), _price(ref))})
+                   "how": "%s = %s / %s" % (cash_note, money(available, curr), _price(ref))})
 
     qty = max(0, min(l["shares"] for l in limits))
     bound = [l["name"] for l in limits if l["shares"] == qty]
@@ -386,22 +471,23 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         l["binds"] = l["name"] == bound[0]
     cost = round(qty * ref, 2)
     loss = round(qty * risk_c / 100.0, 2)
+    min_order_val = float(c.get("min_order_inr") if (is_in and c.get("min_order_inr") is not None) else (c.get("min_order_usd") or 0))
     refusal = None
     if qty == 0:
         if bound[0] == "max loss":
             refusal = ("one share risks %s (entry %s minus stop %s), more than your %s max loss per trade. "
                        "No order. Skip this trade, or plan a closer stop with trader-exit."
-                       % (money(risk), _price(ref), _price(stop), money(max_loss)))
+                       % (money(risk, curr), _price(ref), _price(stop), money(max_loss, curr)))
         else:
             refusal = ("one share of %s costs %s, more than your %s limit (%s). No order."
-                       % (sym, money(ref), bound[0], limits[[l["name"] for l in limits].index(bound[0])]["how"]))
+                       % (sym, money(ref, curr), bound[0], limits[[l["name"] for l in limits].index(bound[0])]["how"]))
     elif _f(c.get("min_reward_risk")) and reward_c < _f(c["min_reward_risk"]) * risk_c - EPS:
         refusal = ("reward:risk %.2f (target %s, entry %s, stop %s) is under your minimum %s, so trader-risk "
                    "would block it. No order. Skip it, or make a new plan with trader-exit."
                    % (reward_c / float(risk_c), _price(target), _price(ref), _price(stop), _num(c["min_reward_risk"])))
-    elif cost < float(c.get("min_order_usd") or 0) - 0.005:
+    elif cost < min_order_val - 0.005:
         refusal = ("%d share%s of %s is %s, under your %s minimum order. No order."
-                   % (qty, "" if qty == 1 else "s", sym, money(cost), money(c["min_order_usd"])))
+                   % (qty, "" if qty == 1 else "s", sym, money(cost, curr), money(min_order_val, curr)))
     return {
         "symbol": sym, "side": "buy", "setup": plan.get("setup", ""), "date": plan.get("date"),
         "entry_time": plan.get("entry_time", ""), "entry_plan": round_cent(entry_plan),
@@ -412,10 +498,11 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         "max_loss_per_trade_usd": max_loss, "limits": limits, "qty": qty, "bound_by": bound[0],
         "cost": cost, "max_loss": loss, "flat_by": plan.get("flat_by") or c.get("flat_by"),
         "order_type": "limit" if limit is not None else "market", "refusal": refusal,
+        "market": "IN" if is_in else "US", "currency": curr, "min_order_usd": min_order_val,
     }
 
 
-def bracket_order(s):
+def bracket_order(s, cfg=None):
     """The one proposed order, Alpaca place_stock_order fields (strings) plus why and plan."""
     if s["refusal"] or s["qty"] <= 0:
         return None
@@ -424,11 +511,12 @@ def bracket_order(s):
     if s["order_type"] == "limit":
         o["limit_price"] = _price(s["entry"])
     setup = SETUP_WORDS.get(s["setup"], s["setup"] or "day trade")
+    curr = s.get("currency") or ("₹" if s.get("market") == "IN" else "$")
     why = ("%s on %s: %d shares, bound by your %s (%d x %s = %s at the stop)"
-           % (setup, s["symbol"], s["qty"], {"max loss": "%s max loss per trade" % money(s["max_loss_per_trade_usd"] or 0),
+           % (setup, s["symbol"], s["qty"], {"max loss": "%s max loss per trade" % money(s["max_loss_per_trade_usd"] or 0, curr),
                                              "position cap": "position cap", "max order": "max order",
                                              "cash": "cash after the buffer"}[s["bound_by"]],
-              s["qty"], _price(s["risk_per_share"]), money(s["max_loss"])))
+              s["qty"], _price(s["risk_per_share"]), money(s["max_loss"], curr)))
     o.update({
         "order_class": "bracket",
         "take_profit_limit_price": _price(s["target"]),
@@ -438,12 +526,21 @@ def bracket_order(s):
                  "risk_per_share": s["risk_per_share"], "max_loss": s["max_loss"], "setup": s["setup"],
                  "entry_time": s["entry_time"], "flat_by": s["flat_by"]},
     })
+    if s.get("market") == "IN":
+        o["market"] = "IN"
+        o["exchange"] = "NSE" if not s["symbol"].endswith(".BO") else "BSE"
+        o["tradingsymbol"] = s["symbol"].replace(".NS", "").replace(".BO", "")
+        o["product"] = (cfg or {}).get("product", "MIS")
+        o["validity"] = "DAY"
+        charges = calculate_indian_charges(s["entry"], s["target"], s["qty"])
+        o["charges"] = charges
     return o
 
 
 def plan_report(s, order, notes=()):
     lines = []
     setup = SETUP_WORDS.get(s["setup"], s["setup"] or "setup")
+    curr = s.get("currency") or ("₹" if s.get("market") == "IN" else "$")
     lines.append("%s buy, %s, entry %s%s" % (s["symbol"], setup, _price(s["entry_plan"]),
                                             (" at " + s["entry_time"]) if s["entry_time"] else ""))
     lines.append("Stop %s%s. Target %s%s." % (_price(s["stop"]), (": " + s["stop_label"]) if s["stop_label"] else "",
@@ -467,8 +564,8 @@ def plan_report(s, order, notes=()):
         lines.append("Education and tooling, not financial advice.")
         return "\n".join(lines)
     lines.append("Size: %d shares of %s = %s at %s. Max loss at the stop: %d x %s = %s."
-                 % (s["qty"], s["symbol"], money(s["cost"]), _price(s["entry"]), s["qty"],
-                    _price(s["risk_per_share"]), money(s["max_loss"])))
+                 % (s["qty"], s["symbol"], money(s["cost"], curr), _price(s["entry"]), s["qty"],
+                    _price(s["risk_per_share"]), money(s["max_loss"], curr)))
     lines.append("A stop is an order, not a promise: in a fast market it can fill below %s." % _price(s["stop"]))
     lines.append("")
     lines.append("Proposed bracket order (place_stock_order arguments, nothing has been placed):")
@@ -476,9 +573,14 @@ def plan_report(s, order, notes=()):
     lines.append("  buy %s %s, %s, day, take-profit %s, stop-loss %s"
                  % (order["qty"], order["symbol"], how, order["take_profit_limit_price"],
                     order["stop_loss_stop_price"]))
+    if s.get("market") == "IN" and order.get("charges"):
+        ch = order["charges"]
+        lines.append("  estimated charges (NSE): ₹%.2f (STT ₹%.2f, Brokerage ₹%.2f, GST ₹%.2f, Stamp ₹%.2f, Txn ₹%.2f). Net at target: ₹%.2f."
+                     % (ch["total_charges"], ch["stt"], ch["brokerage"], ch["gst"], ch["stamp_duty"], ch["exchange_charges"], ch["net_pnl"]))
     if s["flat_by"]:
-        lines.append("Flat by %s New York: anything still open then gets closed (trader-alerts rings, "
-                     "trader-broker flatten)." % s["flat_by"])
+        tz_name = "IST" if s.get("market") == "IN" else "New York"
+        lines.append("Flat by %s %s: anything still open then gets closed (trader-alerts rings, "
+                     "trader-broker flatten)." % (s["flat_by"], tz_name))
     lines.append("")
     lines.append("Next: trader-risk checks it, then trader-broker asks you yes or no.")
     lines.append("Education and tooling, not financial advice.")
@@ -773,9 +875,18 @@ def write_orders(path, orders, cfg, source="", now_utc=None):
 # ---------------------------------------------------------------- main
 
 def run_plan(a, cfg):
-    now = parse_now(a.now)
-    today = to_eastern(now).date().isoformat()
     plan = read_json(a.plan, "plan (run trader-exit first, or use --weights for a split)")
+    mkt = getattr(a, "market", None)
+    if not mkt and plan.get("market"):
+        mkt = plan.get("market")
+    sym = str((plan or {}).get("symbol") or "").upper()
+    if not mkt and is_indian_market(symbol=sym, config=cfg):
+        mkt = "IN"
+    is_in = is_indian_market(market=mkt, symbol=sym, config=cfg)
+    now = parse_now(a.now, market=mkt)
+    to_local = to_ist if is_in else to_eastern
+    tz_name = "IST" if is_in else "New York"
+    today = to_local(now).date().isoformat()
     limit = None
     if a.limit is not None:
         if a.limit == "plan":
@@ -784,7 +895,6 @@ def run_plan(a, cfg):
             limit = _f(a.limit)
             if limit is None or limit <= 0:
                 raise SizeError("--limit wants a price, like --limit 364.00")
-    sym = str((plan or {}).get("symbol") or "").upper()
     notes, price = [], None
     ppath = a.prices or ("trader/prices.json" if os.path.exists("trader/prices.json") else None)
     if ppath and limit is None and sym:
@@ -793,19 +903,19 @@ def run_plan(a, cfg):
         if p is not None and fresh:
             price = p
             if round_cent(p) > round_cent(_f(plan.get("entry")) or 0):
-                notes.append("%s last %s (as of %s New York) is above the plan's entry %s, so the risk "
-                             "is bigger: sized at %s." % (sym, _price(p), to_eastern(t).strftime("%H:%M"),
+                notes.append("%s last %s (as of %s %s) is above the plan's entry %s, so the risk "
+                             "is bigger: sized at %s." % (sym, _price(p), to_local(t).strftime("%H:%M"), tz_name,
                                                           _price(plan.get("entry")), _price(p)))
         elif p is not None:
             notes.append("%s in %s is %s: not used (older than %d minutes). Sized at the plan's entry."
-                         % (sym, ppath, ("from " + to_eastern(t).strftime("%Y-%m-%d %H:%M") + " New York")
+                         % (sym, ppath, ("from " + to_local(t).strftime("%Y-%m-%d %H:%M") + " " + tz_name)
                             if t else "undated", FRESH_MINUTES))
     cash = None
     if a.portfolio and os.path.exists(a.portfolio):
         pf = read_json(a.portfolio, "portfolio")
         cash = _f(pf.get("cash")) if isinstance(pf, dict) else None
     s = size_trade(plan, cfg, a.budget, limit, price, cash, today)
-    order = bracket_order(s)
+    order = bracket_order(s, cfg)
     if order and a.write:
         src = "trader/plan.json (%s %s %s)" % (s["symbol"], s["setup"] or "plan", s["date"] or today)
         write_orders(a.write, [order], cfg, src, now)
@@ -855,6 +965,7 @@ def main(argv=None):
     ap.add_argument("--portfolio", default="trader/portfolio.json",
                     help="your account; its cash caps the size if it exists")
     ap.add_argument("--now", help="pretend it is this New York time, e.g. \"2026-10-19 10:15\"")
+    ap.add_argument("--market", choices=["us", "in", "nse", "bse"], default=None, help="market (us or in)")
     ap.add_argument("--write", nargs="?", const="trader/orders.json", metavar="PATH",
                     help="write the proposed order (default trader/orders.json)")
     ap.add_argument("--json", action="store_true", help="print JSON instead of the report")

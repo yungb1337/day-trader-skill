@@ -40,6 +40,13 @@ import re
 import shutil
 import subprocess
 import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -58,9 +65,108 @@ TXN_TYPES = {"P": "purchase", "S": "sale", "S (partial)": "partial sale", "E": "
 OWNERS = {"SP": "spouse", "JT": "joint", "DC": "dependent child", "": "self"}
 LATE_DAYS = 45
 
+SUPER_INVESTORS_IN = {
+    "damani": ["Radhakishan Damani", "Derive Trading And Resorts", "Bright Star Investments", "Damani"],
+    "jhunjhunwala": ["Rekha Jhunjhunwala", "Rakesh Jhunjhunwala", "Rare Enterprises", "Jhunjhunwala"],
+    "kacholia": ["Ashish Kacholia", "Ashish Ramchandra Kacholia", "Kacholia"],
+    "kedia": ["Vijay Kedia", "Kedia Securities", "Vijay Kishanlal Kedia"],
+    "nemish": ["Nemish Shah", "Enam Holdings"],
+    "agrawal": ["Mukul Agrawal", "Mukul Mahavir Agrawal"],
+    "porinju": ["Porinju Veliyath", "Equity Intelligence India"],
+    "khanna": ["Dolly Khanna", "Rajiv Khanna"],
+    "kela": ["Madhusudan Kela", "MK Ventures"],
+    "singhania": ["Sunil Singhania", "Abakkus"],
+}
+
 
 class PtrError(Exception):
     pass
+
+
+def is_indian_market(symbol=None, market=None, config=None):
+    if market:
+        return str(market).strip().lower() in ("in", "nse", "bse", "india")
+    if symbol:
+        s = str(symbol).strip().upper()
+        if s.endswith(".NS") or s.endswith(".BO") or s in ("NSE", "NIFTY", "BANKNIFTY"):
+            return True
+    if config:
+        m = config.get("market") or config.get("exchange")
+        if m and str(m).strip().lower() in ("in", "nse", "bse", "india"):
+            return True
+        curr = config.get("currency")
+        if curr and str(curr).strip().upper() == "INR":
+            return True
+    return False
+
+
+def match_super_investor(client_name):
+    """Match client name to known Indian super-investors."""
+    if not client_name:
+        return None
+    c_lower = client_name.lower()
+    for key, aliases in SUPER_INVESTORS_IN.items():
+        for alias in aliases:
+            if alias.lower() in c_lower:
+                return key
+    return None
+
+
+def parse_indian_deal(item):
+    """Normalize Indian bulk/block deal row into uniform structure."""
+    sym = item.get("symbol") or item.get("symbolDesc") or item.get("securityName") or ""
+    if not sym.endswith(".NS") and not sym.endswith(".BO"):
+        sym = sym + ".NS"
+    qty = int(float(str(item.get("quantity") or item.get("qty") or 0).replace(",", "")))
+    price = float(str(item.get("tradePrice") or item.get("price") or item.get("avgPrice") or 0).replace(",", ""))
+    val_cr = round((qty * price) / 1e7, 2)
+    client = (item.get("clientName") or item.get("client_name") or item.get("investor") or "").strip()
+    inv_key = match_super_investor(client)
+    d_type = (item.get("dealType") or item.get("side") or item.get("type") or "BUY").upper()
+    date_str = item.get("date") or item.get("dealDate") or _dt.date.today().isoformat()
+    return {
+        "date": date_str,
+        "symbol": sym,
+        "security_name": item.get("securityName") or item.get("company") or sym,
+        "client_name": client,
+        "deal_type": d_type,
+        "quantity": qty,
+        "trade_price": price,
+        "value_cr": val_cr,
+        "category": item.get("category", "Bulk Deal"),
+        "super_investor": inv_key,
+    }
+
+
+def render_deals(deals, watch=()):
+    out = []
+    for d in deals:
+        flag = "  <- on your watchlist" if d["symbol"] in watch else ""
+        inv_str = (" [Super-Investor: %s]" % d["super_investor"]) if d["super_investor"] else ""
+        out.append("%s  %-12s %-4s %10s shares @ ₹%-8.2f (₹%.2f Cr)  %-30s%s%s" % (
+            d["date"], d["symbol"], d["deal_type"], "{:,}".format(d["quantity"]),
+            d["trade_price"], d["value_cr"], d["client_name"][:30], inv_str, flag))
+    return "\n".join(out) + ("\n" if out else "")
+
+
+def load_indian_deals(offline=None, investor=None, symbol=None, min_value=0.0):
+    """Load Indian bulk/block deals from offline file or online NSE snapshot."""
+    deals = []
+    if offline:
+        if os.path.isfile(offline):
+            with open(offline, encoding="utf-8") as fh:
+                raw = json.load(fh)
+                items = raw.get("deals", raw) if isinstance(raw, dict) else raw
+                deals = [parse_indian_deal(x) for x in items]
+    if investor:
+        inv_lower = investor.lower()
+        deals = [d for d in deals if d["super_investor"] == inv_lower or inv_lower in d["client_name"].lower()]
+    if symbol:
+        s_upper = symbol.upper()
+        deals = [d for d in deals if d["symbol"].upper() == s_upper or d["symbol"].rsplit(".", 1)[0].upper() == s_upper]
+    if min_value > 0:
+        deals = [d for d in deals if d["value_cr"] >= min_value]
+    return deals
 
 
 # ---------------------------------------------------------------- the index
@@ -419,7 +525,8 @@ def _parser():
                        help="last name or 'First Last'; repeat for more members")
         p.add_argument("--type", default="P", help="FilingType (default P = PTR; '' for all)")
         p.add_argument("--since", help="only filings on or after YYYY-MM-DD")
-        p.add_argument("--offline", metavar="FILE", help="a saved <YEAR>FD.zip or .xml")
+        p.add_argument("--offline", metavar="FILE", help="a saved <YEAR>FD.zip, .xml, or deals JSON")
+        p.add_argument("--market", choices=["us", "in", "nse", "bse"], help="market: us or in/nse/bse")
         p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("index", help="list filings from the yearly index")
@@ -451,6 +558,18 @@ def _parser():
     p.add_argument("--filed", help="filing date YYYY-MM-DD (else read from the signature)")
     p.add_argument("--tickers", nargs="*")
     p.add_argument("--portfolio", default="trader/portfolio.json")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("investors", help="list tracked Indian super-investors (whales)")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("deals", help="NSE/BSE bulk and block deals & super-investors (Indian markets)")
+    p.add_argument("--investor", help="filter by super-investor (damani, jhunjhunwala, kedia, etc.)")
+    p.add_argument("--symbol", help="filter by ticker symbol (e.g. RELIANCE.NS)")
+    p.add_argument("--min-value", type=float, default=0.0, help="minimum deal value in ₹ Crores")
+    p.add_argument("--offline", metavar="FILE", help="path to deals JSON file")
+    p.add_argument("--portfolio", default="trader/portfolio.json")
+    p.add_argument("--tickers", nargs="*")
     p.add_argument("--json", action="store_true")
     return ap
 
@@ -486,6 +605,27 @@ def main(argv=None):
 
 
 def _run(args):
+    if args.cmd == "investors":
+        if args.json:
+            print(json.dumps(SUPER_INVESTORS_IN, indent=2))
+        else:
+            print("Tracked Indian Super-Investors (Whales):")
+            for k, aliases in sorted(SUPER_INVESTORS_IN.items()):
+                print("  %-15s : %s" % (k, aliases[0]))
+        return 0
+
+    if args.cmd == "deals":
+        deals = load_indian_deals(offline=args.offline, investor=args.investor, symbol=args.symbol, min_value=args.min_value)
+        watch = watchlist(args)
+        if args.json:
+            print(json.dumps(deals, indent=2))
+        else:
+            if not deals:
+                print("No matching deals found.")
+            else:
+                sys.stdout.write(render_deals(deals, watch))
+        return 0 if deals else 1
+
     if args.cmd == "parse":
         with open(args.text_file, encoding="utf-8", errors="replace") as fh:
             report = parse_ptr_text(fh.read(), filed=args.filed)

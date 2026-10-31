@@ -31,11 +31,12 @@ python3 "${CLAUDE_SKILL_DIR}/exit.py" plan                          # trader/ent
 python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --stop or-mid --target 1R --write
 python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --stop atr:1.5           # needs the session's bars (Yahoo or --offline)
 python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --symbol TSLA --entry 364.18 --or-high 362.18 --or-low 354.47
+python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --symbol RELIANCE.NS --entry 2500.0 --or-high 2490.0 --or-low 2470.0 --market in
 python3 "${CLAUDE_SKILL_DIR}/exit.py" show                          # the current trader/plan.json
 ```
 
-Other flags: `--flat-by 15:55`, `--json`, `--now "2026-10-19 10:15"` (New
-York time), `--entry PRICE` with a waiting entry.json to plan ahead, `--setup
+Other flags: `--flat-by HH:MM` (defaults: US 15:55 ET, India 15:15 IST), `--market {us,in,nse,bse}`,
+`--json`, `--now "2026-10-19 10:15"` (New York time for US, IST for India), `--entry PRICE` with a waiting entry.json to plan ahead, `--setup
 level`, `--offline FILE` (a saved Yahoo chart JSON for an ATR stop).
 
 ## What it reads and writes
@@ -66,9 +67,9 @@ A level setup has no opening range to lean on, so it needs a stop you name.
   below it. A risk under 0.05% of the price: too tight to survive the
   spread, normal wiggle would stop you out. An entry.json that has not
   triggered (unless you give `--entry`). A short: v2 plans longs only.
-- **Flat by.** 15:55 by default (or `flat_by` in the config). Out by then,
-  win or lose, no overnight hold. On a 1:00 p.m. early close it moves up to
-  12:55. An entry at or after the flat-by time is refused.
+- **Flat by.** 15:55 ET for US markets, 15:15 IST for Indian markets (MIS auto-square-off cutoff),
+  or `flat_by` in the config. Out by then, win or lose, no overnight hold. On a 1:00 p.m. US early close
+  it moves up to 12:55. An entry at or after the flat-by time is refused.
 
 ## Steps
 

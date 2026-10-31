@@ -1,0 +1,13 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Runtime state and trade session files
+trader/*.json
+trader/state/
+trader/daemon.pid
+
+# OS generated files
+.DS_Store
+Thumbs.db

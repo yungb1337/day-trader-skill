@@ -30,14 +30,30 @@ Tool in this folder (standard library Python; `pdftotext` from poppler is
 optional, to read the PDFs locally):
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/ptr.py" --help
+python3 "${CLAUDE_SKILL_DIR}/ptr.py" index --member pelosi
+python3 "${CLAUDE_SKILL_DIR}/ptr.py" index --since 2026-10-01        # every member
+python3 "${CLAUDE_SKILL_DIR}/ptr.py" deals                           # India: NSE/BSE bulk and block deals
+python3 "${CLAUDE_SKILL_DIR}/ptr.py" deals --symbol TATAMOTORS.NS    # filter by symbol
+python3 "${CLAUDE_SKILL_DIR}/ptr.py" deals --investor damani         # filter by Indian super-investor
+python3 "${CLAUDE_SKILL_DIR}/ptr.py" investors                       # list tracked Indian super-investors
 ```
 
 ## What it reads and writes
 
-- Reads `https://disclosures-clerk.house.gov/public_disc/financial-pdfs/<YEAR>FD.zip`
+- **US Congress**: Reads `https://disclosures-clerk.house.gov/public_disc/financial-pdfs/<YEAR>FD.zip`
   (one `<Member>` per filing: name, district, FilingType, FilingDate, DocID)
   and each PTR at `.../public_disc/ptr-pdfs/<YEAR>/<DocID>.pdf`.
+- **Indian Super-Investors & Bulk/Block Deals (`deals`)**:
+  Tracks transactions by prominent Indian market super-investors:
+  - Radhakishan Damani (`damani`)
+  - Rakesh Jhunjhunwala / Rare Enterprises (`jhunjhunwala`)
+  - Vijay Kedia (`kedia`)
+  - Ashish Kacholia (`kacholia`)
+  - Nemish Shah (`nemish`)
+  - Raamdeo Agrawal (`agrawal`)
+  - Porinju Veliyath (`porinju`)
+  - Dolly Khanna (`khanna`)
+  Reads official NSE/BSE Bulk & Block deal records (transactions exceeding 0.5% of total shares or ₹10 Cr in value). Values are computed and displayed in Crores (`₹ Cr`).
 - Writes `trader/state/pelosi.json` (the DocIDs already shown, so each PTR
   alerts once) and keeps downloaded PDFs in `trader/state/ptr-pdfs/`.
 - Reads `trader/portfolio.json` (if it exists) to flag trades in what you hold.

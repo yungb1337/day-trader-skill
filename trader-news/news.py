@@ -47,12 +47,20 @@ import json
 import os
 import re
 import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
 YAHOO = "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%s&region=US&lang=en-US"
+YAHOO_IN = "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%s&region=IN&lang=en-IN"
 CHART = "https://%s.finance.yahoo.com/v8/finance/chart/%s?range=1d&interval=5m"
 SEC_FEED = ("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=%s&type=%s"
             "&dateb=&owner=include&count=%d&output=atom")
@@ -61,6 +69,8 @@ PLACEHOLDER = "you@example.com"
 BROWSER_UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 KEEP_DAYS = 30
 MOVE_PCT = 3.0  # a stock this far from yesterday's close is flagged as moving
+IST_OFFSET = _dt.timedelta(hours=5, minutes=30)
+INDIAN_TICKER = re.compile(r"^[A-Z0-9_\-]+\.(?:NS|BO)$", re.IGNORECASE)
 
 ITEMS_8K = {
     "1.01": "material agreement", "1.02": "agreement ended", "1.03": "bankruptcy",
@@ -75,16 +85,16 @@ ITEMS_8K = {
 }
 IMPORTANT_ITEMS = {"1.03", "1.05", "2.02", "2.04", "2.06", "3.01", "4.02", "5.01", "5.02"}
 KEYWORDS = [
-    ("earnings", r"\bearnings\b|\bresults\b|\bEPS\b|\bguidance\b|\bforecast\b"),
+    ("earnings", r"\bearnings\b|\bresults\b|\bEPS\b|\bguidance\b|\bforecast\b|\bfinancial results\b|\bq[1-4]\b|\bquarterly\b|\bPAT\b|\bEBITDA\b"),
     ("analyst", r"\bupgrade[sd]?\b|\bdowngrade[sd]?\b|price target|\boutperform\b|\bunderperform\b"),
-    ("legal", r"\blawsuit\b|\bsued\b|\bprobe\b|\binvestigation\b|\bSEC charges\b|\bantitrust\b|\bjudge\b|\bcourt\b"),
-    ("deal", r"\bacqui(?:re|res|red|sition)\b|\bmerger\b|\bbuyout\b|\btakeover\b|\bdeal\b"),
-    ("capital", r"\bdividend\b|\bbuyback\b|\brepurchase\b|\bstock split\b|\boffering\b"),
-    ("people", r"\bCEO\b|\bCFO\b|\bresign|\bsteps down\b|\bappoint"),
-    ("risk", r"\brecall\b|\bbankrupt|\bdefault\b|\bdelist|\bhack|\bbreach\b|\boutage\b"),
-    ("halt", r"\bhalt(?:s|ed)?\b|\btrading (?:pause|suspen)"),
-    ("regulatory", r"\bFDA\b|\bapproval\b|\bapproves\b|\bclinical\b|\bFTC\b|\bDOJ\b"),
-    ("macro", r"\bFed\b|\bFOMC\b|\bCPI\b|\binflation\b|\bjobs report\b|\bpayrolls\b|\btariffs?\b|\bfutures\b"),
+    ("legal", r"\blawsuit\b|\bsued\b|\bprobe\b|\binvestigation\b|\bSEC charges\b|\bantitrust\b|\bjudge\b|\bcourt\b|\bSEBI\b|\bshow cause\b"),
+    ("deal", r"\bacqui(?:re|res|red|sition)\b|\bmerger\b|\bbuyout\b|\btakeover\b|\bdeal\b|\bdemerger\b|\bamalgamation\b|\bopen offer\b"),
+    ("capital", r"\bdividend\b|\bbuyback\b|\brepurchase\b|\bstock split\b|\boffering\b|\bbonus\b|\brights issue\b|\bQIP\b|\bOFS\b"),
+    ("people", r"\bCEO\b|\bCFO\b|\bresign|\bsteps down\b|\bappoint|\bpromoter\b"),
+    ("risk", r"\brecall\b|\bbankrupt|\bdefault\b|\bdelist|\bhack|\bbreach\b|\boutage\b|\bpledge\b|\bpledged\b"),
+    ("halt", r"\bhalt(?:s|ed)?\b|\btrading (?:pause|suspen)|\bcircuit filter\b|\bupper circuit\b|\blower circuit\b"),
+    ("regulatory", r"\bFDA\b|\bapproval\b|\bapproves\b|\bclinical\b|\bFTC\b|\bDOJ\b|\bSEBI\b|\bRBI\b|\bCCI\b"),
+    ("macro", r"\bFed\b|\bFOMC\b|\bCPI\b|\binflation\b|\bjobs report\b|\bpayrolls\b|\btariffs?\b|\bfutures\b|\bRBI\b|\brepo rate\b|\bmonetary policy\b"),
 ]
 
 
@@ -92,7 +102,36 @@ class NewsError(Exception):
     pass
 
 
-# ---------------------------------------------------------------- time
+# ---------------------------------------------------------------- time and markets
+
+def is_indian_market(symbol=None, market=None, config=None):
+    if market:
+        return str(market).strip().lower() in ("in", "nse", "bse", "india")
+    if symbol:
+        s = str(symbol).strip().upper()
+        if s.endswith(".NS") or s.endswith(".BO") or s in ("NSE", "NIFTY", "BANKNIFTY"):
+            return True
+    if config:
+        m = config.get("market") or config.get("exchange")
+        if m and str(m).strip().lower() in ("in", "nse", "bse", "india"):
+            return True
+        curr = config.get("currency")
+        if curr and str(curr).strip().upper() == "INR":
+            return True
+    return False
+
+
+def to_ist(utc):
+    """Aware or naive UTC -> naive Indian Standard Time (UTC+05:30)."""
+    if utc.tzinfo is not None:
+        utc = utc.astimezone(_dt.timezone.utc)
+    return utc.replace(tzinfo=None) + IST_OFFSET
+
+
+def ist_to_utc(dt_naive):
+    """Naive Indian Standard Time -> aware UTC datetime."""
+    return (dt_naive - IST_OFFSET).replace(tzinfo=_dt.timezone.utc)
+
 
 def _nth_sunday(year, month, n):
     d = _dt.date(year, month, 1)
@@ -192,7 +231,10 @@ class Fetcher(object):
 
 
 def yahoo_symbol(ticker):
-    return ticker.upper().replace(".", "-")
+    sym = ticker.upper()
+    if sym.endswith(".NS") or sym.endswith(".BO"):
+        return sym
+    return sym.replace(".", "-")
 
 
 def cik_map(fetcher, state):
@@ -327,8 +369,13 @@ def collect_moves(fetcher, watch, errors=None):
 def mention_patterns(watch):
     pats = {}
     for t, name in watch.items():
+        base = t.rsplit(".", 1)[0] if (t.endswith(".NS") or t.endswith(".BO")) else t
         alts = [r"\(%s\)" % re.escape(t), r"\$%s\b" % re.escape(t),
                 r"\b(?:NYSE|NASDAQ|Nasdaq)\s*:\s*%s\b" % re.escape(t)]
+        if base != t:
+            alts.extend([r"\(%s\)" % re.escape(base), r"\$%s\b" % re.escape(base),
+                         r"\b(?:NSE|BSE)\s*:\s*%s\b" % re.escape(base),
+                         r"\b%s\b" % re.escape(base)])
         if name and len(name) >= 4:
             alts.append(r"\b%s\b" % re.escape(name).replace(r"\ ", r"[\s-]"))
         pats[t] = re.compile("|".join(alts))
@@ -346,7 +393,7 @@ def tag(items, watch):
                 touches.add(t)
         it["touches"] = sorted(touches)
         it["tags"] = [label for label, rx in KEYWORDS if re.search(rx, hay, re.I)]
-        if it["kind"] == "filing" and "2.02" in it.get("items", []) and "earnings" not in it["tags"]:
+        if it.get("kind") == "filing" and "2.02" in it.get("items", []) and "earnings" not in it["tags"]:
             it["tags"].insert(0, "earnings")
     return items
 
@@ -378,12 +425,14 @@ def fingerprint(it):
 
 # ---------------------------------------------------------------- the check
 
-def collect(fetcher, watch, state, sec=True, forms=("8-K",), count=10, errors=None):
+def collect(fetcher, watch, state, sec=True, forms=("8-K",), count=10, errors=None, market=None):
     errors = [] if errors is None else errors
     items = []
     for t in sorted(watch):
+        is_in = is_indian_market(symbol=t, market=market)
+        feed_url = YAHOO_IN if is_in else YAHOO
         try:
-            items += parse_rss(fetcher.get(YAHOO % yahoo_symbol(t), "yahoo-%s.xml" % t), t)
+            items += parse_rss(fetcher.get(feed_url % yahoo_symbol(t), "yahoo-%s.xml" % t), t)
         except NewsError as exc:
             errors.append("headlines for %s: %s" % (t, exc))
     if sec:
@@ -395,7 +444,7 @@ def collect(fetcher, watch, state, sec=True, forms=("8-K",), count=10, errors=No
         for t in sorted(watch):
             cik = ciks.get(t)
             if not cik:
-                if ciks:
+                if ciks and not is_indian_market(symbol=t, market=market):
                     errors.append("no SEC CIK for %s" % t)
                 continue
             for form in forms:
@@ -435,25 +484,29 @@ def remember(items, state, now):
     state["last_check"] = stamp
 
 
-def render_moves(moves, move_pct=MOVE_PCT):
+def render_moves(moves, move_pct=MOVE_PCT, is_india=False):
     out = []
+    tz_word = "IST" if is_india else "ET"
+    t_conv = to_ist if is_india else to_eastern
     for m in moves:
         flag = "MOVING" if abs(m["pct"]) >= move_pct else ""
-        when = (" at %s ET" % to_eastern(m["time"]).strftime("%H:%M")) if m.get("time") else ""
+        when = (" at %s %s" % (t_conv(m["time"]).strftime("%H:%M"), tz_word)) if m.get("time") else ""
         out.append("%-6s %s %+.2f%% vs yesterday's close %s%s  %s" % (
             m["ticker"], "{:,.2f}".format(m["price"]), m["pct"], "{:,.2f}".format(m["prev_close"]),
             when, flag))
     return out
 
 
-def render(items, errors, now, moves=None, move_pct=MOVE_PCT):
-    out = render_moves(moves or [], move_pct)
+def render(items, errors, now, moves=None, move_pct=MOVE_PCT, is_india=False):
+    out = render_moves(moves or [], move_pct, is_india=is_india)
     if out:
         out.append("")
     if not items:
         out.append("Nothing new.")
+    tz_word = "IST" if is_india else "ET"
+    t_conv = to_ist if is_india else to_eastern
     for it in items:
-        when = to_eastern(it["time"]).strftime("%Y-%m-%d %H:%M ET") if it["time"] else "time unknown"
+        when = t_conv(it["time"]).strftime("%Y-%m-%d %H:%M " + tz_word) if it["time"] else "time unknown"
         mark = "!" if it.get("important") else " "
         who = ",".join(it["touches"]) or it["ticker"]
         out.append("%s %s  %-11s %-13s %s" % (mark, when, who, it["source"], it["title"]))
@@ -465,7 +518,7 @@ def render(items, errors, now, moves=None, move_pct=MOVE_PCT):
     for e in errors:
         out.append("note: %s" % e)
     out.append("Checked %s. Headlines are leads, not facts; open the story before acting. "
-               "Not financial advice." % to_eastern(now).strftime("%Y-%m-%d %H:%M ET"))
+               "Not financial advice." % t_conv(now).strftime("%Y-%m-%d %H:%M " + tz_word))
     return "\n".join(out) + "\n"
 
 
@@ -495,6 +548,7 @@ def main(argv=None):
     ap.add_argument("--config", default="trader/config.json")
     ap.add_argument("--offline", metavar="DIR")
     ap.add_argument("--now", help="ISO time, for reproducible runs")
+    ap.add_argument("--market", choices=["us", "in", "nse", "bse"], help="target market: us or in/nse/bse")
     ap.add_argument("--dry-run", action="store_true", help="do not update the state file")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
@@ -509,6 +563,13 @@ def main(argv=None):
         print("news: no tickers. Pass --tickers, or run /trader-scanner first (it writes "
               "trader/watchlist.json).", file=sys.stderr)
         return 2
+    cfg = load_json(args.config) or {}
+    if args.market:
+        is_in = is_indian_market(market=args.market)
+    elif any(is_indian_market(symbol=t) for t in watch):
+        is_in = True
+    else:
+        is_in = False
     now = parse_time(args.now) if args.now else _dt.datetime.now(_dt.timezone.utc)
     state = load_json(args.state) or {}
     errors = []
@@ -520,7 +581,7 @@ def main(argv=None):
         sec = False
     fetcher = Fetcher(ua, offline=args.offline)
     forms = [f.strip().upper() for f in args.forms.split(",") if f.strip()]
-    items = collect(fetcher, watch, state, sec=sec, forms=forms, errors=errors)
+    items = collect(fetcher, watch, state, sec=sec, forms=forms, errors=errors, market=args.market or cfg.get("market"))
     items = dedupe(tag(items, watch))
     shown = select(items, state, now, hours=args.hours, show_all=args.all)
     moves = [] if args.no_moves else collect_moves(fetcher, watch, errors)
@@ -530,7 +591,7 @@ def main(argv=None):
         print(json.dumps({"checked": now.isoformat(), "moves": mv, "items": _json_ready(shown),
                           "notes": errors}, indent=2))
     else:
-        sys.stdout.write(render(shown, errors, now, moves, args.move_pct))
+        sys.stdout.write(render(shown, errors, now, moves, args.move_pct, is_india=is_in))
     if not args.dry_run:
         remember(items, state, now)
         folder = os.path.dirname(args.state)

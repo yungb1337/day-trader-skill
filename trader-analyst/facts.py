@@ -46,6 +46,13 @@ import json
 import os
 import re
 import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 import time
 import urllib.error
 import urllib.request
@@ -54,6 +61,8 @@ TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK%s.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK%s.json"
 ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/%d/%s/"
+YF_SUMMARY_URL = "https://query2.finance.yahoo.com/v10/finance/quoteSummary/%s?modules=financialData,defaultKeyStatistics,incomeStatementHistoryQuarterly,earningsHistory,price"
+BROWSER_UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 PLACEHOLDER = "you@example.com"
 UA_HELP = ("SEC requires a User-Agent with your name and email. Set \"sec_user_agent\": "
            "\"Your Name you@example.com\" in trader/config.json (your real name and email), "
@@ -74,6 +83,34 @@ FLOWS = ("revenue", "cost_of_revenue", "gross_profit", "operating_income", "net_
 
 class FactsError(Exception):
     pass
+
+
+def is_indian_market(symbol=None, market=None, config=None):
+    if market:
+        return str(market).strip().lower() in ("in", "nse", "bse", "india")
+    if symbol:
+        s = str(symbol).strip().upper()
+        return s.endswith(".NS") or s.endswith(".BO") or s in ("NSE", "NIFTY", "BANKNIFTY")
+    if config:
+        m = config.get("market") or config.get("exchange")
+        if m and str(m).strip().lower() in ("in", "nse", "bse", "india"):
+            return True
+        curr = config.get("currency")
+        if curr and str(curr).strip().upper() == "INR":
+            return True
+    return False
+
+
+def format_inr(v):
+    if v is None:
+        return "n/a"
+    av = abs(v)
+    if av >= 1e7:
+        return "₹%.2f Cr" % (v / 1e7)
+    elif av >= 1e5:
+        return "₹%.2f L" % (v / 1e5)
+    else:
+        return "₹{:,.0f}".format(v)
 
 
 def user_agent(cli=None, config="trader/config.json"):
@@ -100,14 +137,15 @@ class Fetcher(object):
                 raise FactsError("offline: no file %s" % path)
             with open(path, encoding="utf-8") as fh:
                 return json.load(fh)
-        if not self.ua:
+        is_sec = "sec.gov" in url
+        if is_sec and not self.ua:
             raise FactsError(UA_HELP)
         gap = time.time() - self._last
         if gap < self.pause:
             time.sleep(self.pause - gap)
         self._last = time.time()
-        req = urllib.request.Request(url, headers={"User-Agent": self.ua,
-                                                   "Accept-Encoding": "gzip"})
+        headers = {"User-Agent": self.ua if is_sec else BROWSER_UA, "Accept-Encoding": "gzip"}
+        req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = resp.read()
@@ -291,7 +329,7 @@ def stale_note(result, filings):
     return None
 
 
-def changes(result):
+def changes(result, is_india=False):
     """Plain sentences: what changed in the latest quarter."""
     rows = result["rows"]
     if not rows:
@@ -300,9 +338,14 @@ def changes(result):
     prev = rows[1] if len(rows) > 1 else None
     out = []
 
+    is_in = is_india or result.get("currency") == "INR" or "NSE" in str(result.get("cik", "")) or "BSE" in str(result.get("cik", ""))
+
     def money(v):
+        if is_in:
+            return format_inr(v)
         return "n/a" if v is None else "$%.2fB" % (v / 1e9) if abs(v) >= 1e9 else "$%.1fM" % (v / 1e6)
 
+    curr = "₹" if is_in else "$"
     label = "Quarter ending %s%s" % (cur["end"], " (derived from the 10-K)" if cur["derived"] else "")
     line = "%s: revenue %s" % (label, money(cur["revenue"]))
     if cur["revenue_yoy"] is not None:
@@ -311,7 +354,7 @@ def changes(result):
     if cur["net_income_yoy"] is not None:
         line += " (%+.1f%%)" % cur["net_income_yoy"]
     if cur["eps_diluted"] is not None:
-        line += ", diluted EPS $%.2f" % cur["eps_diluted"]
+        line += ", diluted EPS %s%.2f" % (curr, cur["eps_diluted"])
         if cur["eps_yoy"] is not None:
             line += " (%+.1f%%)" % cur["eps_yoy"]
     out.append(line + ".")
@@ -381,12 +424,126 @@ def latest_filings(submissions, cik, fetcher=None):
     return out
 
 
+def parse_yahoo_summary(data, ticker):
+    """Parse Yahoo Finance quoteSummary JSON into the standard facts structure."""
+    if isinstance(data, (bytes, bytearray)):
+        doc = json.loads(data.decode("utf-8"))
+    elif isinstance(data, str):
+        doc = json.loads(data)
+    else:
+        doc = data
+    res = (doc.get("quoteSummary", {}).get("result") or [{}])[0]
+    inc_hist = res.get("incomeStatementHistoryQuarterly", {}).get("incomeStatementHistory", [])
+    price_mod = res.get("price", {})
+    name = price_mod.get("shortName") or price_mod.get("longName") or ticker
+    earn_hist = res.get("earningsHistory", {}).get("history", [])
+    eps_map = {}
+    for eh in earn_hist:
+        q_end = eh.get("quarter", {}).get("fmt")
+        act = eh.get("epsActual", {}).get("raw")
+        if q_end and act is not None:
+            eps_map[q_end] = act
+
+    rows = []
+    series_rev = {}
+    series_ni = {}
+    series_eps = {}
+
+    def _val(obj, key):
+        if not obj or key not in obj:
+            return None
+        v = obj[key]
+        if isinstance(v, dict):
+            return v.get("raw")
+        return v
+
+    for stmt in inc_hist:
+        end = stmt.get("endDate", {}).get("fmt")
+        if not end:
+            continue
+        rev = _val(stmt, "totalRevenue")
+        gp = _val(stmt, "grossProfit")
+        oi = _val(stmt, "operatingIncome")
+        ni = _val(stmt, "netIncome")
+        eps = eps_map.get(end)
+
+        series_rev[end] = rev
+        series_ni[end] = ni
+        series_eps[end] = eps
+
+        rows.append({
+            "end": end,
+            "start": None,
+            "fiscal": end[:7],
+            "derived": False,
+            "revenue": rev,
+            "gross_profit": gp,
+            "operating_income": oi,
+            "net_income": ni,
+            "eps_diluted": round(eps, 2) if eps is not None else None,
+            "gross_margin": margin(gp, rev),
+            "operating_margin": margin(oi, rev),
+            "net_margin": margin(ni, rev),
+            "revenue_yoy": None,
+            "net_income_yoy": None,
+            "eps_yoy": None,
+            "filed": None,
+            "form": "Quarterly",
+        })
+
+    # Sort rows newest first
+    rows.sort(key=lambda r: r["end"], reverse=True)
+
+    # Calculate YoY comparisons
+    for r in rows:
+        end = r["end"]
+        for target_end in series_rev:
+            try:
+                days = abs((_date(end) - _date(target_end)).days - 365)
+                if days <= 20:
+                    r["revenue_yoy"] = pct(r["revenue"], series_rev.get(target_end))
+                    r["net_income_yoy"] = pct(r["net_income"], series_ni.get(target_end))
+                    r["eps_yoy"] = pct(r["eps_diluted"], series_eps.get(target_end))
+                    break
+            except Exception:
+                pass
+
+    ttm = {}
+    if len(rows) >= 4:
+        last4 = rows[:4]
+        revs = [x["revenue"] for x in last4 if x["revenue"] is not None]
+        nis = [x["net_income"] for x in last4 if x["net_income"] is not None]
+        epss = [x["eps_diluted"] for x in last4 if x["eps_diluted"] is not None]
+        if len(revs) == 4:
+            ttm["revenue"] = sum(revs)
+        if len(nis) == 4:
+            ttm["net_income"] = sum(nis)
+        if len(epss) == 4:
+            ttm["eps_diluted"] = round(sum(epss), 2)
+
+    return {
+        "entity": name,
+        "cik": "N/A (NSE/BSE)",
+        "rows": rows,
+        "ttm": ttm,
+        "concepts": {},
+        "source": "Yahoo Finance (Indian Market)",
+        "currency": "INR",
+    }
+
+
 # ---------------------------------------------------------------- output
 
 def _m(v):
     if v is None:
         return "-"
     return "{:,.0f}".format(v / 1e6)
+
+
+def _cr(v):
+    if v is None:
+        return "-"
+    return "{:,.2f}".format(v / 1e7)
 
 
 def _p(v):
@@ -397,28 +554,50 @@ def _pm(v):
     return "-" if v is None else "%.1f%%" % v
 
 
-def render(ticker, result, filings):
-    out = ["%s (%s), CIK %s. US$ millions except EPS. Source: SEC XBRL company facts." % (
-        result["entity"], ticker, result["cik"]), ""]
-    out.append("%-11s %-9s %10s %8s %7s %7s %7s %10s %8s %7s" % (
-        "quarter end", "fiscal", "revenue", "rev yoy", "gross", "oper", "net",
-        "net inc", "EPS dil", "EPS yoy"))
-    for r in result["rows"]:
-        out.append("%-11s %-9s %10s %8s %7s %7s %7s %10s %8s %7s%s" % (
-            r["end"], r["fiscal"].strip()[:9], _m(r["revenue"]), _p(r["revenue_yoy"]),
-            _pm(r["gross_margin"]), _pm(r["operating_margin"]), _pm(r["net_margin"]),
-            _m(r["net_income"]), "-" if r["eps_diluted"] is None else "%.2f" % r["eps_diluted"],
-            _p(r["eps_yoy"]), "  derived" if r["derived"] else ""))
-    t = result["ttm"]
-    if t:
-        out.append("")
-        out.append("Last 4 quarters: revenue %s, net income %s, diluted EPS %s." % (
-            "$" + _m(t.get("revenue")) + "M" if t.get("revenue") is not None else "-",
-            "$" + _m(t.get("net_income")) + "M" if t.get("net_income") is not None else "-",
-            "$%.2f" % t["eps_diluted"] if t.get("eps_diluted") is not None else "-"))
+def render(ticker, result, filings, is_india=False):
+    is_in = is_india or result.get("currency") == "INR" or "NSE" in str(result.get("cik", "")) or "BSE" in str(result.get("cik", "")) or is_indian_market(symbol=ticker)
+    if is_in:
+        out = ["%s (%s), %s. ₹ Crores except EPS. Source: %s." % (
+            result["entity"], ticker, result.get("cik", "NSE/BSE"), result.get("source", "Indian Exchange Financials")), ""]
+        out.append("%-11s %-9s %10s %8s %7s %7s %7s %10s %8s %7s" % (
+            "quarter end", "fiscal", "revenue", "rev yoy", "gross", "oper", "net",
+            "net inc", "EPS dil", "EPS yoy"))
+        for r in result["rows"]:
+            out.append("%-11s %-9s %10s %8s %7s %7s %7s %10s %8s %7s%s" % (
+                r["end"], r["fiscal"].strip()[:9], _cr(r["revenue"]), _p(r["revenue_yoy"]),
+                _pm(r["gross_margin"]), _pm(r["operating_margin"]), _pm(r["net_margin"]),
+                _cr(r["net_income"]), "-" if r["eps_diluted"] is None else "%.2f" % r["eps_diluted"],
+                _p(r["eps_yoy"]), "  derived" if r["derived"] else ""))
+        t = result["ttm"]
+        if t:
+            out.append("")
+            out.append("Last 4 quarters: revenue %s, net income %s, diluted EPS %s." % (
+                ("₹" + _cr(t.get("revenue")) + " Cr") if t.get("revenue") is not None else "-",
+                ("₹" + _cr(t.get("net_income")) + " Cr") if t.get("net_income") is not None else "-",
+                ("₹%.2f" % t["eps_diluted"]) if t.get("eps_diluted") is not None else "-"))
+    else:
+        out = ["%s (%s), CIK %s. US$ millions except EPS. Source: SEC XBRL company facts." % (
+            result["entity"], ticker, result["cik"]), ""]
+        out.append("%-11s %-9s %10s %8s %7s %7s %7s %10s %8s %7s" % (
+            "quarter end", "fiscal", "revenue", "rev yoy", "gross", "oper", "net",
+            "net inc", "EPS dil", "EPS yoy"))
+        for r in result["rows"]:
+            out.append("%-11s %-9s %10s %8s %7s %7s %7s %10s %8s %7s%s" % (
+                r["end"], r["fiscal"].strip()[:9], _m(r["revenue"]), _p(r["revenue_yoy"]),
+                _pm(r["gross_margin"]), _pm(r["operating_margin"]), _pm(r["net_margin"]),
+                _m(r["net_income"]), "-" if r["eps_diluted"] is None else "%.2f" % r["eps_diluted"],
+                _p(r["eps_yoy"]), "  derived" if r["derived"] else ""))
+        t = result["ttm"]
+        if t:
+            out.append("")
+            out.append("Last 4 quarters: revenue %s, net income %s, diluted EPS %s." % (
+                "$" + _m(t.get("revenue")) + "M" if t.get("revenue") is not None else "-",
+                "$" + _m(t.get("net_income")) + "M" if t.get("net_income") is not None else "-",
+                "$%.2f" % t["eps_diluted"] if t.get("eps_diluted") is not None else "-"))
+
     out.append("")
     out.append("What changed:")
-    for line in changes(result):
+    for line in changes(result, is_india=is_in):
         out.append("  - " + line)
     if filings:
         out.append("")
@@ -450,7 +629,8 @@ def metrics_row(ticker, result):
             "revenue_growth_yoy": cur.get("revenue_yoy"), "eps_growth_yoy": cur.get("eps_yoy"),
             "net_income_growth_yoy": cur.get("net_income_yoy"),
             "gross_margin": cur.get("gross_margin"), "operating_margin": cur.get("operating_margin"),
-            "net_margin": cur.get("net_margin"), "source": "SEC XBRL company facts"}
+            "net_margin": cur.get("net_margin"), "source": result.get("source", "SEC XBRL company facts"),
+            "currency": result.get("currency", "USD")}
 
 
 def clean_title(title):
@@ -477,25 +657,62 @@ def main(argv=None):
     ap.add_argument("--user-agent")
     ap.add_argument("--config", default="trader/config.json")
     ap.add_argument("--offline", metavar="DIR")
+    ap.add_argument("--market", choices=["us", "in", "nse", "bse"], help="target market: us or in/nse/bse")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     if not args.tickers and not args.cik:
         ap.print_help()
         return 2
+
+    cfg = {}
+    if os.path.isfile(args.config):
+        try:
+            with open(args.config, encoding="utf-8") as fh:
+                cfg = json.load(fh)
+        except Exception:
+            cfg = {}
+
+    wanted = args.tickers or [args.cik]
+    all_indian = bool(wanted) and all(is_indian_market(symbol=t, market=args.market, config=cfg) for t in wanted)
+
     ua = user_agent(args.user_agent, args.config)
-    if not ua and not args.offline:
+    if not ua and not args.offline and not all_indian:
         print("facts: " + UA_HELP, file=sys.stderr)
         return 2
     fetcher = Fetcher(ua, offline=args.offline)
     results, rows, failed = [], [], 0
     try:
-        ciks = {} if args.cik else ticker_ciks(fetcher)
+        ciks = {} if (args.cik or all_indian) else ticker_ciks(fetcher)
     except FactsError as exc:
-        print("facts: %s" % exc, file=sys.stderr)
-        return 2
-    wanted = args.tickers or [args.cik]
+        if not all_indian:
+            print("facts: %s" % exc, file=sys.stderr)
+            return 2
+        ciks = {}
     for t in wanted:
         tick = t.upper()
+        is_in = is_indian_market(symbol=tick, market=args.market, config=cfg)
+        if is_in and (tick.endswith(".NS") or tick.endswith(".BO") or not ciks.get(tick.replace("-", "."))):
+            try:
+                name = "quoteSummary-%s.json" % tick
+                if fetcher.offline:
+                    path = os.path.join(fetcher.offline, name)
+                    if not os.path.isfile(path):
+                        name = "facts-%s.json" % tick
+                data = fetcher.json(YF_SUMMARY_URL % tick, name)
+                result = parse_yahoo_summary(data, tick)
+                filings = None
+            except FactsError as exc:
+                print("facts: %s: %s" % (tick, exc), file=sys.stderr)
+                failed += 1
+                continue
+            results.append({"ticker": tick, "result": result, "filings": filings,
+                            "changes": changes(result, is_india=True), "note": None})
+            rows.append(metrics_row(tick, result))
+            if not args.json:
+                sys.stdout.write(render(tick, result, filings, is_india=True))
+                sys.stdout.write("\n")
+            continue
+
         if args.cik:
             cik, name = str(args.cik).zfill(10), None
         else:
@@ -517,10 +734,10 @@ def main(argv=None):
             failed += 1
             continue
         results.append({"ticker": tick, "result": result, "filings": filings,
-                        "changes": changes(result), "note": stale_note(result, filings)})
+                        "changes": changes(result, is_india=is_in), "note": stale_note(result, filings)})
         rows.append(metrics_row(tick, result))
         if not args.json:
-            sys.stdout.write(render(tick, result, filings))
+            sys.stdout.write(render(tick, result, filings, is_india=is_in))
             sys.stdout.write("\n")
     if args.json:
         print(json.dumps(results, indent=2))

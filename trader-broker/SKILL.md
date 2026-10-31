@@ -135,6 +135,32 @@ submits orders directly to the market. So with IBKR the final yes happens in
 IBKR as well. Set `"broker": "ibkr"` in `trader/config.json`. Set its tools
 that draft orders to Needs approval too.
 
+## Setup C: Zerodha Kite Connect (Indian Markets)
+
+For Indian markets (NSE and BSE), `ticket.py` generates native Zerodha Kite Connect order specifications (`kite_tool_input`) formatted for Kite's `place_order` API or MCP server:
+
+```json
+{
+  "exchange": "NSE",
+  "tradingsymbol": "RELIANCE",
+  "transaction_type": "BUY",
+  "quantity": 25,
+  "product": "MIS",
+  "order_type": "LIMIT",
+  "validity": "DAY",
+  "price": 2500.0,
+  "trigger_price": 2480.0
+}
+```
+
+Key Indian broker features:
+- **Product code `MIS`**: Margin Intraday Square-off (mandatory intraday broker auto-square-off at 15:15 IST).
+- **Exchange**: `NSE` or `BSE`.
+- **Trading symbol**: Pure stock symbol without `.NS` / `.BO` extension (e.g. `RELIANCE`, `TCS`, `INFY`).
+- **Paper Trading**: Configured with `"broker": "zerodha"` and `"paper": true` in `trader/config.json` (see `claude_desktop_config.kite.example.json`).
+- **Human Approval**: Mandatory explicit "yes" required in chat before any order call.
+- **Flatten / Square-off**: `python3 ticket.py flatten --symbol RELIANCE.NS --qty 25 --market in` prepares the exit order before 15:15 IST.
+
 ## Steps: the entry
 
 1. `ticket.py show`. Only READY tickets go to the user. A ticket that is NOT

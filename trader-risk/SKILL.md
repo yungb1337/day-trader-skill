@@ -61,20 +61,20 @@ batch that is fine order by order but breaks a limit together is caught.
 
 | check | blocks when |
 | --- | --- |
-| format | no symbol, side not buy or sell, both or neither of qty and notional, a notional order that is not market + day (Alpaca's rule), a limit order with no limit price; a bracket that is not whole shares, not `day` or `gtc`, or misses its stop-loss or take-profit |
-| asset | an option symbol while `allow_options` is false; crypto or anything that is not a US stock or ETF ticker |
+| format | no symbol, side not buy or sell, both or neither of qty and notional; Alpaca or Zerodha Kite order formatting validation (supports `exchange`, `tradingsymbol`, `product`, `validity`); a bracket that is not whole shares, not `day` or `gtc`, or misses its stop-loss or take-profit |
+| asset | an option symbol while `allow_options` is false; crypto or anything that is not a US or Indian stock (`.NS`/`.BO`) or ETF ticker |
 | short | a sell of more than you hold (`allow_short` false) |
 | blocked | (entries) the ticker is on the `blocked` list |
-| size | (entries) under `min_order_usd` or over `max_order_usd` |
+| size | (entries) under `min_order_usd` / `min_order_inr` or over `max_order_usd` / `max_order_inr` |
 | position | (entries) the stock would be over `max_position_pct` of the account |
 | cash | (entries) the buy would leave less than the cash buffer, or need margin |
 | stop | (entries) no stop while `require_stop` is true (a bracket `stop_loss_stop_price`, or the order's plan stop); a stop on the wrong side of the entry |
-| loss | (entries) qty x (entry minus stop) over `max_loss_per_trade_usd` |
+| loss | (entries) qty x (entry minus stop) over `max_loss_per_trade_usd` or `max_loss_per_trade_inr` |
 | reward:risk | (entries) (target minus entry) / (entry minus stop) under `min_reward_risk` |
-| daily loss | (entries) the max losses at the stops of today's entries, plus this one, over `max_daily_loss_usd` |
+| daily loss | (entries) the max losses at the stops of today's entries, plus this one, over `max_daily_loss_usd` or `max_daily_loss_inr` |
 | trades | (entries) `max_trades_per_day` entries already placed today |
-| window | (entries) before `no_entries_before` or after `no_entries_after`, or the market is closed |
-| pdt | (entries, only with `pdt_guard` true) 3 day trades already in the last 5 business days |
+| window | (entries) before `no_entries_before` or after `no_entries_after`, or the market is closed (9:30-15:30 ET for US; 09:30-15:00 IST for India) |
+| pdt | (US entries only, with `pdt_guard` true) 3 day trades already in the last 5 business days; bypassed for Indian markets (SEBI does not impose FINRA PDT rules) |
 | duplicate | (entries) the same symbol and side twice in one batch, or already placed today |
 | daily limit | (entries) `max_orders_per_day` orders already placed today |
 

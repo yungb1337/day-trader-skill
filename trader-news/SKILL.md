@@ -26,6 +26,7 @@ Tool in this folder (standard library Python, no keys):
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/news.py"                         # watchlist + plan + portfolio
 python3 "${CLAUDE_SKILL_DIR}/news.py" --tickers TSLA NVDA --hours 12
+python3 "${CLAUDE_SKILL_DIR}/news.py" --tickers RELIANCE.NS TCS.NS --hours 12 # Indian feeds & IST times
 python3 "${CLAUDE_SKILL_DIR}/news.py" --no-sec --json
 ```
 
@@ -36,9 +37,9 @@ python3 "${CLAUDE_SKILL_DIR}/news.py" --no-sec --json
 | `--tickers`, else `trader/watchlist.json` | the scanner's hits (trader-scanner) |
 | `trader/plan.json` | the trade you are planning (trader-exit) |
 | `trader/portfolio.json` | what you hold (trader-broker records fills there) |
-| Yahoo Finance headline RSS | `https://feeds.finance.yahoo.com/rss/2.0/headline?s=TSLA&region=US&lang=en-US` |
-| Yahoo Finance chart endpoint | the last price against yesterday's close (unofficial, can lag) |
-| SEC EDGAR company Atom feed | 8-K by default (`--forms 8-K,10-Q` for more); needs `sec_user_agent` in `trader/config.json` or `SEC_USER_AGENT`, else filings are skipped with a note |
+| Yahoo Finance headline RSS | US: `region=US&lang=en-US`; India (`.NS`/`.BO`): `region=IN&lang=en-IN` |
+| Yahoo Finance chart endpoint | the last price against yesterday's close (preserves `.NS`/`.BO` dots) |
+| SEC EDGAR company Atom feed | US stocks 8-K by default; skipped for Indian companies without requiring SEC credentials |
 | `trader/state/news.json` | what has been shown (kept 30 days) and each ticker's CIK |
 
 ## The rules
@@ -50,10 +51,8 @@ python3 "${CLAUDE_SKILL_DIR}/news.py" --no-sec --json
   what the company told the SEC.
 - **Say what it touches.** Every item lists the tickers it touches and its
   tags: earnings, analyst, legal, deal, capital, people, risk, halt,
-  regulatory, macro. Filings marked `!` carry an important 8-K item: earnings
-  results (2.02), an officer change (5.02), an impairment (2.06), a delisting
-  notice (3.01), past financials no longer reliable (4.02), bankruptcy (1.03)
-  or a cyber incident (1.05).
+  regulatory, macro. For Indian equities, specialized tags identify SEBI regulatory notices,
+  promoter pledge changes, circuit filters, bonus/split corporate actions, and quarterly PAT/EBITDA releases.
 - **MOVING** marks a stock 3 % or more from yesterday's close (`--move-pct`).
   A move with no headline is worth saying out loud too.
 - **No predictions.** Report what was published and how far the price is from
